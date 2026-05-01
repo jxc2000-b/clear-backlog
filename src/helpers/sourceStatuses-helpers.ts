@@ -1,6 +1,6 @@
 import type { BackendJob, QueueItem, SourceStatus } from '../types';
 
-export function getQueueSourceStatuses(items: QueueItem[]): SourceStatus[] {
+export function buildInitialSourceStatuses(items: QueueItem[]): SourceStatus[] { //builds the initial source statuses
 	let youtubeIndex = 0;
 	let articleIndex = 0;
 	let pdfIndex = 0;
@@ -47,16 +47,6 @@ export function getQueueSourceStatuses(items: QueueItem[]): SourceStatus[] {
 
 export function getJobSourceList(job: BackendJob) {
 	return [
-		...(job.sources.youtubePlaylistUrl
-			? [
-					{
-						sourceId: 'youtube-playlist:0',
-						type: 'youtube-playlist' as const,
-						source: job.sources.youtubePlaylistUrl,
-					},
-				]
-			: []),
-
 		...job.sources.youtubeVideoUrls.map((source, index) => ({
 			sourceId: `youtube:${index}`,
 			type: 'youtube' as const,

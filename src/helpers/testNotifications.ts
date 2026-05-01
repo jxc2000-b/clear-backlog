@@ -31,8 +31,8 @@ export async function testServiceWorkerNotification() {
 	try {
 		await registration.showNotification('Clear-Backlog smoke test', {
 			body: 'If you see this, the service worker can deliver notifications.',
-			icon: '/icon.svg',
-			badge: '/icon.svg',
+			icon: '/eyes-192.png',
+			badge: '/eyes-192.png',
 			tag: 'cb-sw-smoke',
 			requireInteraction: false,
 		});

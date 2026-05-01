@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { BackendJob, QueueItem, SourceStatus } from './types';
 import {
 	ARTICLE_LIMIT,
@@ -8,14 +8,15 @@ import {
 	YOUTUBE_LIMIT,
 } from './constants';
 import { submitIntake } from './helpers/api';
-import { testServiceWorkerNotification } from './helpers/notifications';
+import { testServiceWorkerNotification } from './helpers/testNotifications';
 import {
-	getQueueSourceStatuses,
+	buildInitialSourceStatuses,
 	getSourceStatuses,
-} from './helpers/sourceStatuses';
+} from './helpers/sourceStatuses-helpers';
 import { useJobPolling } from './hooks/useJobPolling';
 import EntryView from './views/EntryView';
 import ProcessingView from './views/ProcessingView';
+import FinishedView from './views/FinishedView';
 
 // ---------------------------------------------------------------------------------
 // ---------------------------------HELPERS-----------------------------------------
@@ -85,24 +86,30 @@ function App() {
 	const [showNotifPrompt, setShowNotifPrompt] = useState(false);
 	const [activeJob, setActiveJob] = useState<BackendJob | null>(null);
 	const [sourceStatuses, setSourceStatuses] = useState<SourceStatus[]>([]);
-	const [view, setView] = useState<'entry' | 'processing'>('entry');
+	const [view, setView] = useState<'entry' | 'processing' | 'finished'>('entry');
 	const { stopPollingRef, pollJobSourceStatuses } = useJobPolling();
+	const notificationTimersRef = useRef<number[]>([]);
+
+	function clearScheduledNotifications() {
+		for (const id of notificationTimersRef.current) {
+			window.clearTimeout(id);
+		}
+		notificationTimersRef.current = [];
+	}
 
 	useEffect(() => {
 		if (!('Notification' in window)) return;
 		if (Notification.permission === 'granted') return;
 		// if (Notification.permission !== 'default') return;
 		// if (localStorage.getItem(NOTIF_DISMISSED_KEY)) return;
-		const t = setTimeout(() => setShowNotifPrompt(true), 12000);
+		const t = setTimeout(() => setShowNotifPrompt(true), 5000);
 		return () => clearTimeout(t); //incase of unmount clear timer
 	}, []);
 
+	useEffect(() => { console.log(view) }, [view])
+	
 	function dismissNotifPrompt() {
 		localStorage.setItem(NOTIF_DISMISSED_KEY, '1');
-		setShowNotifPrompt(false);
-	}
-
-	function disableNotifsPrompts() {
 		setShowNotifPrompt(false);
 	}
 
@@ -110,18 +117,22 @@ function App() {
 	const artCount = queue.filter((i) => i.type === 'article').length;
 	const pdfCount = queue.filter((i) => i.type === 'pdf').length;
 
-	function addYoutube() {
+	function addYoutube(): string | null {
 		const url = youtubeInput.trim();
-		if (!url || ytCount >= YOUTUBE_LIMIT) return;
+		if (!url) return null;
+		if (ytCount >= YOUTUBE_LIMIT) return `Limit of ${YOUTUBE_LIMIT} youtube videos hit`;
 		setQueue((q) => [...q, { id: crypto.randomUUID(), type: 'youtube', url }]);
 		setYoutubeInput('');
+		return null;
 	}
 
-	function addArticle() {
+	function addArticle(): string | null {
 		const url = articleInput.trim();
-		if (!url || artCount >= ARTICLE_LIMIT) return;
+		if (!url) return null;
+		if (artCount >= ARTICLE_LIMIT) return `Limit of ${ARTICLE_LIMIT} articles hit`;
 		setQueue((q) => [...q, { id: crypto.randomUUID(), type: 'article', url }]);
 		setArticleInput('');
+		return null;
 	}
 
 	function addPdfs(files: FileList | null) {
@@ -150,6 +161,7 @@ function App() {
 	function backToEntry() {
 		stopPollingRef.current?.();
 		stopPollingRef.current = null;
+		clearScheduledNotifications();
 		setView('entry');
 		setStatus(null);
 	}
@@ -158,7 +170,7 @@ function App() {
 		if (!queue.length || isLoading) return;
 		setIsLoading(true);
 		setStatus(null);
-		const queuedStatuses = getQueueSourceStatuses(queue);
+		const queuedStatuses = buildInitialSourceStatuses(queue);
 		setActiveJob(null);
 		setSourceStatuses(queuedStatuses);
 		setView('processing');
@@ -191,7 +203,7 @@ function App() {
 				pdfs,
 			});
 
-			const firstStatuses = getSourceStatuses(
+			const initialStatuses = getSourceStatuses(
 				job,
 				new Map(
 					queuedStatuses.map((sourceStatus) => [
@@ -202,7 +214,7 @@ function App() {
 			);
 
 			setActiveJob(job);
-			setSourceStatuses(firstStatuses);
+			setSourceStatuses(initialStatuses);
 			setStatus('Processing...');
 			stopPollingRef.current?.();
 			stopPollingRef.current = pollJobSourceStatuses(job.id, (statuses, nextJob) => {
@@ -218,13 +230,25 @@ function App() {
 				) {
 					setStatus('Text retrieval finished.');
 				}
+
+				const generationStatus = nextJob.generation?.status;
+				
+				if (
+					generationStatus === 'generated' ||
+					generationStatus === 'generated_with_errors'
+				) {
+					setView('finished');
+					void sendNotifications(nextJob);
+				}
+				
 			});
 		} catch {
 			setStatus('Something went wrong. Please try again.');
 			setSourceStatuses((current) =>
 				current.map((sourceStatus) => ({
 					...sourceStatus,
-					status: 'failed',
+					extractionStatus: 'failed',
+					generationStatus: 'failed',
 					message: 'Could not submit source',
 					changed: true,
 				})),
@@ -234,12 +258,80 @@ function App() {
 		}
 	}
 
-	async function sendNotifications() {
-		return;
+	async function sendNotifications(job: BackendJob | null = activeJob) {
+		console.log('[notifications] starting');
+
+		if (!('serviceWorker' in navigator)) {
+			console.error('[notifications] FAIL: service workers not supported in this browser');
+			return false;
+		}
+		if (!('Notification' in window)) {
+			console.error('[notifications] FAIL: notifications not supported in this browser');
+			return false;
+		}
+
+		let permission = Notification.permission;
+		console.log('[notifications] permission state:', permission);
+
+		if (permission === 'default') {
+			console.log('[notifications] requesting permission...');
+			permission = await Notification.requestPermission();
+			console.log('[notifications] permission after request:', permission);
+		}
+
+		if (permission !== 'granted') {
+			console.error('[notifications] FAIL: permission is', permission);
+			return false;
+		}
+
+		console.log('[notifications] waiting for navigator.serviceWorker.ready...');
+		const registration = await navigator.serviceWorker.ready;
+		console.log('[notifications] sw ready, scope:', registration.scope, 'active:', !!registration.active);
+
+		const bytes = job?.generation?.results.flatMap((result) => result.bytes) ?? [];
+
+		try {
+			await registration.showNotification('Clear-Backlog: bytes ready', {
+				body: `${bytes.length} byte${bytes.length !== 1 ? 's' : ''} generated. Delivering one per minute.`,
+				icon: '/eyes-192.png',
+				badge: '/eyes-192.png',
+				tag: 'cb-bytes-ready',
+				requireInteraction: false,
+			});
+			console.log('[notifications] confirmation notification shown');
+		} catch (err) {
+			console.error('[notifications] FAIL: confirmation showNotification threw', err);
+			return false;
+		}
+
+		clearScheduledNotifications();
+		bytes.forEach((byte, index) => {
+			const timerId = window.setTimeout(async () => {
+				try {
+					const reg = await navigator.serviceWorker.ready;
+					await reg.showNotification(byte.speaker || `Byte ${byte.index + 1}`, {
+						body: byte.quote
+							? `"${byte.quote}"\n\n${byte.commentary}`
+							: byte.text,
+						icon: '/eyes-192.png',
+						badge: '/eyes-192.png',
+						tag: `cb-byte-${byte.sourceId}-${byte.index}`,
+						requireInteraction: false,
+					});
+					console.log('[notifications] byte notification shown', byte.sourceId, byte.index);
+				} catch (err) {
+					console.error('[notifications] byte showNotification threw', err);
+				}
+			}, (index + 1) * 60_000);
+			notificationTimersRef.current.push(timerId);
+		});
+
+		console.log('[notifications] PASS: scheduled', bytes.length, 'byte notification(s)');
+		return true;
 	}
 
 	const visibleSourceStatuses =
-		sourceStatuses.length > 0 ? sourceStatuses : getQueueSourceStatuses(queue);
+		sourceStatuses.length > 0 ? sourceStatuses : buildInitialSourceStatuses(queue);
 
 	return (
 		<>
@@ -260,7 +352,7 @@ function App() {
 				<section className="mx-auto max-w-xl overflow-hidden">
 					<div
 						className={`flex w-[200%] transition-transform duration-500 ease-out ${
-							view === 'processing' ? '-translate-x-1/2' : 'translate-x-0'
+							view !== 'entry' ? '-translate-x-1/2' : 'translate-x-0'
 						}`}
 					>
 						<EntryView
@@ -280,12 +372,22 @@ function App() {
 							handleSubmit={handleSubmit}
 						/>
 
-						<ProcessingView
-							backToEntry={backToEntry}
-							activeJob={activeJob}
-							visibleSourceStatuses={visibleSourceStatuses}
-							status={status}
-						/>
+						{view === 'finished' && activeJob ? (
+							<FinishedView
+								backToEntry={backToEntry}
+								completedJob={activeJob}
+								bytes={
+									activeJob.generation?.results.flatMap((result) => result.bytes) ?? []
+								}
+							/>
+						) : (
+							<ProcessingView
+								backToEntry={backToEntry}
+								activeJob={activeJob}
+								visibleSourceStatuses={visibleSourceStatuses}
+								status={status}
+							/>
+						)}
 					</div>
 				</section>
 			</main>

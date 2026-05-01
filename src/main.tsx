@@ -3,12 +3,14 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./styles.css";
 
+// vite-plugin-pwa registers the SW itself (injectRegister: 'auto'); this just
+// observes the result so we can see which script URL got activated
 if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => { //this registers a serviceWorker after load
-    navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => {});
-  });
-  // service worker has access to full site "/", empty catch prevents errors from breaking the app 
-  // necessary for PWA recognition 
+  navigator.serviceWorker.ready
+    .then((reg) =>
+      console.log("[sw] active script:", reg.active?.scriptURL, "scope:", reg.scope),
+    )
+    .catch((err) => console.error("[sw] ready failed:", err));
 }
 
 const rootElement = document.getElementById("root");

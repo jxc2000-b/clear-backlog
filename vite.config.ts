@@ -9,8 +9,12 @@ export default defineConfig({
 		tailwindcss(),
 		VitePWA({
 			registerType: 'autoUpdate',
-			injectRegister: null,
-			includeAssets: ['icon.svg'],
+			injectRegister: 'auto',
+			includeAssets: ['eyes-180.png', 'eyes-192.png', 'eyes-512.png', 'eyes-maskable-512.png'],
+			devOptions: {
+				enabled: true,
+				type: 'module',
+			},
 			manifest: {
 				name: 'Clear Backlog',
 				short_name: 'Clear Backlog',
@@ -21,15 +25,21 @@ export default defineConfig({
 				start_url: '/',
 				icons: [
 					{
-						src: 'icon.svg',
-						sizes: 'any',
-						type: 'image/svg+xml',
+						src: 'eyes-192.png',
+						sizes: '192x192',
+						type: 'image/png',
 						purpose: 'any',
 					},
 					{
-						src: 'icon.svg',
-						sizes: 'any',
-						type: 'image/svg+xml',
+						src: 'eyes-512.png',
+						sizes: '512x512',
+						type: 'image/png',
+						purpose: 'any',
+					},
+					{
+						src: 'eyes-maskable-512.png',
+						sizes: '512x512',
+						type: 'image/png',
 						purpose: 'maskable',
 					},
 				],

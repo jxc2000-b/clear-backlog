@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { BackendJob, SourceStatus } from '../types';
 import { fetchJob } from '../helpers/api';
-import { getSourceStatuses } from '../helpers/sourceStatuses';
+import { getSourceStatuses } from '../helpers/sourceStatuses-helpers';
 
 export function useJobPolling() {
 	const stopPollingRef = useRef<(() => void) | null>(null);
@@ -17,16 +17,16 @@ export function useJobPolling() {
 		onUpdate: (statuses: SourceStatus[], job: BackendJob) => void,
 		intervalMs = 1500,
 	) {
-		let stopped = false;
-		let previous = new Map<string, SourceStatus>();
+		let pollingStopped = false;
+		let previousSourceStatuses = new Map<string, SourceStatus>();
 
 		async function tick() {
-			if (stopped) return;
+			if (pollingStopped) return;
 
 			const { job } = await fetchJob(jobId);
 
-			const statuses = getSourceStatuses(job, previous);
-			previous = new Map(
+			const statuses = getSourceStatuses(job, previousSourceStatuses);
+			previousSourceStatuses = new Map(
 				statuses.map((sourceStatus) => [
 					sourceStatus.sourceId,
 					sourceStatus,
@@ -35,21 +35,29 @@ export function useJobPolling() {
 
 			onUpdate(statuses, job);
 
-			const done = statuses.every(
-				(sourceStatus) =>
-					sourceStatus.extractionStatus === 'text-retrieved' ||
-					sourceStatus.extractionStatus === 'failed',
-			);
+			const generationStatus = job.generation?.status;
+			const generationDone =
+				generationStatus === 'generated' ||
+				generationStatus === 'generated_with_errors' ||
+				generationStatus === 'generation_failed' ||
+				generationStatus === 'failed' ||
+				generationStatus === 'skipped';
 
-			if (!done && !stopped) {
+			const allExtractionsFailed =
+				statuses.length > 0 &&
+				statuses.every((sourceStatus) => sourceStatus.extractionStatus === 'failed');
+
+			const done = generationDone || allExtractionsFailed;
+
+			if (!done && !pollingStopped) {
 				window.setTimeout(tick, intervalMs);
 			}
 		}
 
 		void tick();
 
-		return () => {
-			stopped = true;
+		return function stopPolling() {
+			pollingStopped = true;
 		};
 	}
 

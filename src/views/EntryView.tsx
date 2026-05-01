@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { QueueItem } from '../types';
 import {
 	ARTICLE_LIMIT,
@@ -71,8 +72,8 @@ type EntryViewProps = {
 	setYoutubeInput: (value: string) => void;
 	articleInput: string;
 	setArticleInput: (value: string) => void;
-	addYoutube: () => void;
-	addArticle: () => void;
+	addYoutube: () => string | null;
+	addArticle: () => string | null;
 	addPdfs: (files: FileList | null) => void;
 	remove: (id: string) => void;
 	handleSubmit: () => void;
@@ -96,6 +97,8 @@ function EntryView({
 }: EntryViewProps) {
 	const addBtn =
 		'shrink-0 bg-black px-3 py-1 text-xs font-semibold text-white transition hover:bg-gray-700';
+	const [youtubeMsg, setYoutubeMsg] = useState<string | null>(null);
+	const [articleMsg, setArticleMsg] = useState<string | null>(null);
 
 	return (
 		<div className="w-1/2 shrink-0">
@@ -124,23 +127,27 @@ function EntryView({
 							onKeyDown={(e) => {
 								if (e.key === 'Enter') {
 									e.preventDefault();
-									addYoutube();
+									setYoutubeMsg(addYoutube());
 								}
 							}}
 							placeholder="https://youtube.com/watch?v=…"
-							disabled={ytCount >= YOUTUBE_LIMIT}
 							className="flex-1 border-0 bg-transparent text-sm text-black outline-none placeholder:text-gray-300 disabled:cursor-not-allowed"
 						/>
 						{youtubeInput.trim() && ytCount < YOUTUBE_LIMIT && (
 							<button
 								type="button"
-								onClick={addYoutube}
+								onClick={() => setYoutubeMsg(addYoutube())}
 								className={addBtn}
 							>
 								+ Add
 							</button>
 						)}
 					</div>
+					{youtubeMsg && (
+						<p className="mt-2 text-[10px] font-bold uppercase tracking-widest text-red-500">
+							{youtubeMsg}
+						</p>
+					)}
 				</label>
 
 				{/* Article */}
@@ -156,23 +163,27 @@ function EntryView({
 							onKeyDown={(e) => {
 								if (e.key === 'Enter') {
 									e.preventDefault();
-									addArticle();
+									setArticleMsg(addArticle());
 								}
 							}}
 							placeholder="https://example.com/article…"
-							disabled={artCount >= ARTICLE_LIMIT}
 							className="flex-1 border-0 bg-transparent text-sm text-black outline-none placeholder:text-gray-300 disabled:cursor-not-allowed"
 						/>
 						{articleInput.trim() && artCount < ARTICLE_LIMIT && (
 							<button
 								type="button"
-								onClick={addArticle}
+								onClick={() => setArticleMsg(addArticle())}
 								className={addBtn}
 							>
 								+ Add
 							</button>
 						)}
 					</div>
+					{articleMsg && (
+						<p className="mt-2 text-[10px] font-bold uppercase tracking-widest text-red-500">
+							{articleMsg}
+						</p>
+					)}
 				</label>
 
 				{/* PDF */}
