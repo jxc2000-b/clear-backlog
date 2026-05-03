@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { BackendJob, QueueItem, SourceStatus } from './types';
+import type { ByteRow, JobRow, QueueItem } from './types';
 import {
 	ARTICLE_LIMIT,
 	NOTIF_DISMISSED_KEY,
@@ -9,11 +9,8 @@ import {
 } from './constants';
 import { submitIntake } from './helpers/api';
 import { testServiceWorkerNotification } from './helpers/testNotifications';
-import {
-	buildInitialSourceStatuses,
-	getSourceStatuses,
-} from './helpers/sourceStatuses-helpers';
-import { useJobPolling } from './hooks/useJobPolling';
+import { buildInitialSourceStatuses, sourceRowToStatus } from './helpers/sourceStatuses';
+import { useJobRealtime } from './hooks/useJobRealtime';
 import EntryView from './views/EntryView';
 import ProcessingView from './views/ProcessingView';
 import FinishedView from './views/FinishedView';
@@ -74,6 +71,14 @@ function readFileAsDataUrl(file: File) {
 	});
 }
 
+// Job statuses that mean the pipeline is done, regardless of success/failure.
+const TERMINAL_STATUSES = new Set([
+	'generated',
+	'generated_with_errors',
+	'generation_failed',
+	'failed',
+]);
+
 // ---------------------------------------------------------------------------------
 // ---------------------------------APP-----------------------------------------
 // ---------------------------------------------------------------------------------
@@ -84,11 +89,17 @@ function App() {
 	const [isLoading, setIsLoading] = useState(false);
 	const [status, setStatus] = useState<string | null>(null);
 	const [showNotifPrompt, setShowNotifPrompt] = useState(false);
-	const [activeJob, setActiveJob] = useState<BackendJob | null>(null);
-	const [sourceStatuses, setSourceStatuses] = useState<SourceStatus[]>([]);
+	const [jobId, setJobId] = useState<string | null>(null);
 	const [view, setView] = useState<'entry' | 'processing' | 'finished'>('entry');
-	const { stopPollingRef, pollJobSourceStatuses } = useJobPolling();
+
+	// Realtime subscription. Returns the job row + its sources + its bytes,
+	// auto-updating as Postgres changes stream in. Replaces useJobPolling.
+	const { job, sources, bytes } = useJobRealtime(jobId);
+
 	const notificationTimersRef = useRef<number[]>([]);
+	// Tracks which jobIds have already triggered notifications, so a re-render
+	// of a finished job doesn't re-schedule them.
+	const notifiedJobIdRef = useRef<string | null>(null);
 
 	function clearScheduledNotifications() {
 		for (const id of notificationTimersRef.current) {
@@ -106,8 +117,27 @@ function App() {
 		return () => clearTimeout(t); //incase of unmount clear timer
 	}, []);
 
-	useEffect(() => { console.log(view) }, [view])
-	
+	// Drive view transitions + notifications off the realtime job status. Runs
+	// any time the live status changes — when the worker writes 'generated',
+	// this fires once and switches to the FinishedView.
+	useEffect(() => {
+		if (!job) return;
+		if (TERMINAL_STATUSES.has(job.status)) {
+			setView('finished');
+
+			// Only fire notifications once per job. The realtime hook will keep
+			// updating `job` (e.g. updated_at), and we don't want to re-schedule
+			// each time.
+			if (notifiedJobIdRef.current !== job.id) {
+				notifiedJobIdRef.current = job.id;
+				void sendNotifications(bytes);
+			}
+		}
+		// `bytes` is intentionally read at fire time, not depended upon, so we
+		// don't re-trigger when bytes arrive after the status flips.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [job?.status, job?.id]);
+
 	function dismissNotifPrompt() {
 		localStorage.setItem(NOTIF_DISMISSED_KEY, '1');
 		setShowNotifPrompt(false);
@@ -159,9 +189,9 @@ function App() {
 	}
 
 	function backToEntry() {
-		stopPollingRef.current?.();
-		stopPollingRef.current = null;
 		clearScheduledNotifications();
+		notifiedJobIdRef.current = null;
+		setJobId(null);    // also unsubscribes the realtime channel
 		setView('entry');
 		setStatus(null);
 	}
@@ -170,9 +200,6 @@ function App() {
 		if (!queue.length || isLoading) return;
 		setIsLoading(true);
 		setStatus(null);
-		const queuedStatuses = buildInitialSourceStatuses(queue);
-		setActiveJob(null);
-		setSourceStatuses(queuedStatuses);
 		setView('processing');
 
 		try {
@@ -187,7 +214,7 @@ function App() {
 				})),
 			);
 
-			const { job } = await submitIntake({
+			const { job: createdJob } = await submitIntake({
 				youtubeVideoUrls: queue
 					.filter(
 						(i): i is Extract<QueueItem, { type: 'youtube' }> =>
@@ -203,62 +230,16 @@ function App() {
 				pdfs,
 			});
 
-			const initialStatuses = getSourceStatuses(
-				job,
-				new Map(
-					queuedStatuses.map((sourceStatus) => [
-						sourceStatus.sourceId,
-						sourceStatus,
-					]),
-				),
-			);
-
-			setActiveJob(job);
-			setSourceStatuses(initialStatuses);
+			setJobId(createdJob.id);   // useJobRealtime takes it from here
 			setStatus('Processing...');
-			stopPollingRef.current?.();
-			stopPollingRef.current = pollJobSourceStatuses(job.id, (statuses, nextJob) => {
-				setSourceStatuses(statuses);
-				setActiveJob(nextJob);
-
-				if (
-					statuses.every(
-						(sourceStatus) =>
-							sourceStatus.extractionStatus === 'text-retrieved' ||
-							sourceStatus.extractionStatus === 'failed',
-					)
-				) {
-					setStatus('Text retrieval finished.');
-				}
-
-				const generationStatus = nextJob.generation?.status;
-				
-				if (
-					generationStatus === 'generated' ||
-					generationStatus === 'generated_with_errors'
-				) {
-					setView('finished');
-					void sendNotifications(nextJob);
-				}
-				
-			});
 		} catch {
 			setStatus('Something went wrong. Please try again.');
-			setSourceStatuses((current) =>
-				current.map((sourceStatus) => ({
-					...sourceStatus,
-					extractionStatus: 'failed',
-					generationStatus: 'failed',
-					message: 'Could not submit source',
-					changed: true,
-				})),
-			);
 		} finally {
 			setIsLoading(false);
 		}
 	}
 
-	async function sendNotifications(job: BackendJob | null = activeJob) {
+	async function sendNotifications(jobBytes: ByteRow[]) {
 		console.log('[notifications] starting');
 
 		if (!('serviceWorker' in navigator)) {
@@ -288,11 +269,9 @@ function App() {
 		const registration = await navigator.serviceWorker.ready;
 		console.log('[notifications] sw ready, scope:', registration.scope, 'active:', !!registration.active);
 
-		const bytes = job?.generation?.results.flatMap((result) => result.bytes) ?? [];
-
 		try {
 			await registration.showNotification('Clear-Backlog: bytes ready', {
-				body: `${bytes.length} byte${bytes.length !== 1 ? 's' : ''} generated. Delivering one per minute.`,
+				body: `${jobBytes.length} byte${jobBytes.length !== 1 ? 's' : ''} generated. Delivering one per minute.`,
 				icon: '/eyes-192.png',
 				badge: '/eyes-192.png',
 				tag: 'cb-bytes-ready',
@@ -305,20 +284,20 @@ function App() {
 		}
 
 		clearScheduledNotifications();
-		bytes.forEach((byte, index) => {
+		jobBytes.forEach((byte, index) => {
 			const timerId = window.setTimeout(async () => {
 				try {
 					const reg = await navigator.serviceWorker.ready;
 					await reg.showNotification(byte.speaker || `Byte ${byte.index + 1}`, {
 						body: byte.quote
-							? `"${byte.quote}"\n\n${byte.commentary}`
-							: byte.text,
+							? `"${byte.quote}"\n\n${byte.commentary ?? ''}`
+							: byte.text ?? '',
 						icon: '/eyes-192.png',
 						badge: '/eyes-192.png',
-						tag: `cb-byte-${byte.sourceId}-${byte.index}`,
+						tag: `cb-byte-${byte.source_id}-${byte.index}`,
 						requireInteraction: false,
 					});
-					console.log('[notifications] byte notification shown', byte.sourceId, byte.index);
+					console.log('[notifications] byte notification shown', byte.source_id, byte.index);
 				} catch (err) {
 					console.error('[notifications] byte showNotification threw', err);
 				}
@@ -326,12 +305,17 @@ function App() {
 			notificationTimersRef.current.push(timerId);
 		});
 
-		console.log('[notifications] PASS: scheduled', bytes.length, 'byte notification(s)');
+		console.log('[notifications] PASS: scheduled', jobBytes.length, 'byte notification(s)');
 		return true;
 	}
 
+	// Per-source UI status. Once the realtime hook has rows, we project them
+	// into the SourceStatus shape the views consume. Before submission (no
+	// jobId yet), we project the local queue instead so the Processing view
+	// has placeholder rows during the brief window between submit and the
+	// first realtime update.
 	const visibleSourceStatuses =
-		sourceStatuses.length > 0 ? sourceStatuses : buildInitialSourceStatuses(queue);
+		sources.length > 0 ? sources.map(sourceRowToStatus) : buildInitialSourceStatuses(queue);
 
 	return (
 		<>
@@ -372,18 +356,17 @@ function App() {
 							handleSubmit={handleSubmit}
 						/>
 
-						{view === 'finished' && activeJob ? (
+						{view === 'finished' && job ? (
 							<FinishedView
 								backToEntry={backToEntry}
-								completedJob={activeJob}
-								bytes={
-									activeJob.generation?.results.flatMap((result) => result.bytes) ?? []
-								}
+								job={job}
+								sources={sources}
+								bytes={bytes}
 							/>
 						) : (
 							<ProcessingView
 								backToEntry={backToEntry}
-								activeJob={activeJob}
+								activeJob={job}
 								visibleSourceStatuses={visibleSourceStatuses}
 								status={status}
 							/>

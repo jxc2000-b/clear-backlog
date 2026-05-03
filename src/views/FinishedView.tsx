@@ -1,12 +1,12 @@
-import type { BackendJob, ByteGenerationResult, GeneratedByte } from '../types';
+import type { ByteRow, JobRow, SourceRow, SourceType } from '../types';
 
-function typeBadge(type: GeneratedByte['type']) {
+function typeBadge(type: SourceType) {
 	if (type === 'youtube') return { label: '‎ ▶‎', css: 'bg-red-500 rounded-sm text-white' };
 	if (type === 'article') return { label: 'URL', css: 'bg-gray-500 text-white' };
 	return { label: '📄', css: 'text-[16px]' };
 }
 
-function ByteCard({ byte }: { byte: GeneratedByte }) {
+function ByteCard({ byte, sourceUrl }: { byte: ByteRow; sourceUrl: string }) {
 	return (
 		<li className="border border-gray-200 bg-white px-4 py-3">
 			<div className="flex items-center justify-between gap-3">
@@ -14,20 +14,24 @@ function ByteCard({ byte }: { byte: GeneratedByte }) {
 					Byte {byte.index + 1}
 				</span>
 				<span className="shrink-0 text-[10px] font-bold uppercase tracking-widest text-gray-400">
-					{byte.speaker}
+					{byte.speaker ?? 'Unknown'}
 				</span>
 			</div>
 			<p className="mt-2 border-l-2 border-black pl-3 text-sm italic text-black">
-				“{byte.quote}”
+				“{byte.quote ?? ''}”
 			</p>
-			<p className="mt-2 text-sm text-gray-600">{byte.commentary}</p>
-			<a href = {byte.source} className="mt-2 text-sm text-gray-600 underline decoration-dotted">{byte.source}</a>
+			<p className="mt-2 text-sm text-gray-600">{byte.commentary ?? ''}</p>
+			<a href={sourceUrl} className="mt-2 text-sm text-gray-600 underline decoration-dotted">
+				{sourceUrl}
+			</a>
 		</li>
 	);
 }
 
-function SourceBytesGroup({ result }: { result: ByteGenerationResult }) {
-	const badge = typeBadge(result.type);
+// One section per source that produced bytes. Renders a header card with
+// the type badge + source URL + byte count, then the bytes themselves.
+function SourceBytesGroup({ source, bytes }: { source: SourceRow; bytes: ByteRow[] }) {
+	const badge = typeBadge(source.type);
 
 	return (
 		<section className="space-y-2">
@@ -37,14 +41,18 @@ function SourceBytesGroup({ result }: { result: ByteGenerationResult }) {
 				>
 					{badge.label}
 				</span>
-				<span className="flex-1 truncate text-sm text-black">{result.source}</span>
+				<span className="flex-1 truncate text-sm text-black">{source.source}</span>
 				<span className="shrink-0 text-[10px] font-bold uppercase tracking-widest text-gray-400">
-					{result.bytes.length} byte{result.bytes.length !== 1 ? 's' : ''}
+					{bytes.length} byte{bytes.length !== 1 ? 's' : ''}
 				</span>
 			</div>
 			<ul className="space-y-1.5">
-				{result.bytes.map((byte) => (
-					<ByteCard key={`${byte.sourceId}:${byte.index}`} byte={byte} />
+				{bytes.map((byte) => (
+					<ByteCard
+						key={`${byte.source_id}:${byte.index}`}
+						byte={byte}
+						sourceUrl={source.source}
+					/>
 				))}
 			</ul>
 		</section>
@@ -53,14 +61,30 @@ function SourceBytesGroup({ result }: { result: ByteGenerationResult }) {
 
 type FinishedViewProps = {
 	backToEntry: () => void;
-	completedJob: BackendJob;
-	bytes: GeneratedByte[];
+	job: JobRow;
+	sources: SourceRow[];
+	bytes: ByteRow[];
 };
 
-function FinishedView({ backToEntry, completedJob, bytes }: FinishedViewProps) {
-	const generation = completedJob.generation;
-	const results = generation?.results ?? [];
-	const errors = generation?.errors ?? [];
+function FinishedView({ backToEntry, job, sources, bytes }: FinishedViewProps) {
+	// Group bytes by their source uuid (bytes.source_id FKs to sources.id).
+	const bytesBySource = new Map<string, ByteRow[]>();
+	for (const byte of bytes) {
+		const existing = bytesBySource.get(byte.source_id) ?? [];
+		existing.push(byte);
+		bytesBySource.set(byte.source_id, existing);
+	}
+
+	// Sources that successfully produced at least one byte — these get rendered
+	// as expandable groups. Pair them with the source row so we can show the
+	// type/URL/title alongside.
+	const completedSources = sources.filter((source) => bytesBySource.has(source.id));
+
+	// Sources that failed somewhere in the pipeline — surfaced in the error
+	// section at the bottom so the user knows nothing was generated for them.
+	const failedSources = sources.filter(
+		(source) => source.extraction_status === 'failed' || source.generation_status === 'failed',
+	);
 
 	return (
 		<div className="w-1/2 shrink-0 pl-8">
@@ -80,41 +104,45 @@ function FinishedView({ backToEntry, completedJob, bytes }: FinishedViewProps) {
 					Your bytes are ready
 				</h2>
 				<p className="mt-2 text-sm text-gray-500">
-					Job {completedJob.id.slice(0, 8)} produced {bytes.length} byte
-					{bytes.length !== 1 ? 's' : ''} across {results.length} source
-					{results.length !== 1 ? 's' : ''}.
+					Job {job.id.slice(0, 8)} produced {bytes.length} byte
+					{bytes.length !== 1 ? 's' : ''} across {completedSources.length} source
+					{completedSources.length !== 1 ? 's' : ''}.
 				</p>
 			</div>
 
 			<div className="space-y-6">
-				{results.map((result) => (
-					<SourceBytesGroup key={result.sourceId} result={result} />
+				{completedSources.map((source) => (
+					<SourceBytesGroup
+						key={source.id}
+						source={source}
+						bytes={bytesBySource.get(source.id) ?? []}
+					/>
 				))}
 			</div>
 
-			{errors.length > 0 && (
+			{failedSources.length > 0 && (
 				<div className="mt-8">
 					<p className="mb-2 text-[10px] font-bold uppercase tracking-widest text-red-500">
-						{errors.length} source{errors.length !== 1 ? 's' : ''} failed
+						{failedSources.length} source{failedSources.length !== 1 ? 's' : ''} failed
 					</p>
 					<ul className="space-y-1.5">
-						{errors.map((error, index) => (
+						{failedSources.map((source) => (
 							<li
-								key={`${error.sourceId ?? 'error'}:${index}`}
+								key={source.id}
 								className="border border-red-200 bg-white px-4 py-3"
 							>
 								<div className="flex items-center justify-between gap-3">
 									<span className="text-[10px] font-bold uppercase tracking-widest text-gray-400">
-										{error.type ?? 'unknown'}
+										{source.type}
 									</span>
 									<span className="shrink-0 text-xs font-semibold text-red-600">
-										{error.code}
+										{source.extraction_status === 'failed' ? 'extraction' : 'generation'}
 									</span>
 								</div>
-								{error.source && (
-									<p className="mt-1 truncate text-sm text-black">{error.source}</p>
-								)}
-								<p className="mt-1 text-xs text-gray-500">{error.message}</p>
+								<p className="mt-1 truncate text-sm text-black">{source.source}</p>
+								<p className="mt-1 text-xs text-gray-500">
+									{source.error ?? source.message ?? 'Unknown error'}
+								</p>
 							</li>
 						))}
 					</ul>

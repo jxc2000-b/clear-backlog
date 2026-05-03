@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./styles.css";
+import './helpers/testSupabase';
 
 // vite-plugin-pwa registers the SW itself (injectRegister: 'auto'); this just
 // observes the result so we can see which script URL got activated

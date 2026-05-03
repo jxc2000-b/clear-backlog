@@ -1,4 +1,4 @@
-import type { BackendJob, SourceStatus } from '../types';
+import type { JobRow, SourceStatus } from '../types';
 
 function SourceStatusRow({ item }: { item: SourceStatus }) {
 	const statusCss =
@@ -30,7 +30,7 @@ function SourceStatusRow({ item }: { item: SourceStatus }) {
 
 type ProcessingViewProps = {
 	backToEntry: () => void;
-	activeJob: BackendJob | null;
+	activeJob: JobRow | null;
 	visibleSourceStatuses: SourceStatus[];
 	status: string | null;
 };

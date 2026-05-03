@@ -1,3 +1,11 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// LEGACY: helpers that turned an old-shape BackendJob (nested
+// extraction/generation objects) into a flat per-source status list for the
+// UI. Replaced by `helpers/sourceStatuses.ts`, which works directly with the
+// normalized SourceRow shape from Supabase. Preserved as a reference for the
+// status/derivation logic.
+// ─────────────────────────────────────────────────────────────────────────────
+
 import type { BackendJob, QueueItem, SourceStatus } from '../types';
 
 export function buildInitialSourceStatuses(items: QueueItem[]): SourceStatus[] { //builds the initial source statuses

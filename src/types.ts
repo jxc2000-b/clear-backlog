@@ -88,3 +88,49 @@ export type SourceStatus = {
     changed: boolean;
     textLength?: number;
 };
+
+// ── Supabase row shapes (snake_case to match the database columns) ──────────
+// These mirror the backend's `JobRow`/`SourceRow`/`ByteRow` types and are what
+// supabase-js returns from `.select('*')` against jobs/sources/bytes tables.
+
+export type JobRow = {
+    id: string;
+    status: string;
+    created_at: string;
+    updated_at: string;
+    started_at: string | null;
+    completed_at: string | null;
+    pipeline: string[];
+    pipeline_stage: string | null;
+    limits: Record<string, unknown>;
+    prompts: Record<string, unknown>;
+    error: string | null;
+};
+
+export type SourceRow = {
+    id: string;
+    job_id: string;
+    source_id: string;                   // logical id like 'youtube:0'
+    type: SourceType;
+    source: string;
+    extraction_status: 'queued' | 'extracting' | 'text-retrieved' | 'failed';
+    generation_status: 'waiting' | 'generating' | 'generated' | 'failed';
+    message: string | null;
+    text: string | null;
+    text_length: number | null;
+    error: string | null;
+    created_at: string;
+    updated_at: string;
+};
+
+export type ByteRow = {
+    id: string;
+    job_id: string;
+    source_id: string;                   // sources.id (uuid), not the logical id
+    index: number;
+    speaker: string | null;
+    quote: string | null;
+    commentary: string | null;
+    text: string | null;
+    created_at: string;
+};
